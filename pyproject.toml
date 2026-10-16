@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dependencies = ["openai>=2"]
 
 [project.scripts]
-harness = "harness.cli:main"
+harness = "harness.__main__:main"
 
 [dependency-groups]
 dev = ["ruff"]

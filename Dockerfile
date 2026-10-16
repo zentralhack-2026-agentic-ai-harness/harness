@@ -10,9 +10,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY . .
 RUN uv sync --frozen --no-dev
 
-RUN useradd --create-home agent && mkdir /task /output /work && chown agent /output /work
+RUN useradd --create-home agent && mkdir /task /output && chown agent /output
 USER agent
 
-# Contract: /task (read-only) holds spec.md and task.json; write output/<strategy_file>.
+# Contract: runs `harness` (your pyproject.toml's script) with no arguments. /task (read-only)
+# holds spec.md and task.json; write /output/<strategy_file>; /tmp is scratch.
 ENTRYPOINT ["/harness/.venv/bin/harness"]
-CMD ["--task", "/task", "--output", "/output", "--work", "/work"]

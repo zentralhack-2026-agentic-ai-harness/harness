@@ -2,144 +2,126 @@
 
 The starting point for your Zentral Hack 2026 harness. Fork it and make it better.
 
-It is deliberately minimal: one model, one tool (`bash`) and a loop that stops when the model
-answers without calling the tool. It reads a game's `spec.md` and asks the model to write a
-strategy. It has no budget management, no retries, no fallback strategy, no conformance check,
-no simulator. Building those (or something better) is the hackathon.
+It is deliberately minimal: one model (always the cheapest allowed one), one tool (`bash`) and
+a loop that stops when the model answers without calling the tool. It reads a game's `spec.md`
+and asks the model to write a strategy. It has no budget management, no retries, no fallback
+strategy, no conformance check, no simulator. Building those (or something better) is the hackathon.
 
 ```
 src/harness/
-  cli.py      # entry point: reads /task, sets up /output and /work, runs the agent
-  agent.py    # the loop (OpenAI Responses API) and the bash tool
-  prompt.md   # the system prompt
-Dockerfile    # the sandbox your harness runs in at evaluation time
+  __main__.py  # what the container runs: connects /task and /output to the agent
+  agent.py     # the agent: model choice, settings, the loop (Responses API), the bash tool
+  pricing.py   # what a call costs, as the evaluation counts it
+  prompt.md    # the system prompt
+run.sh         # run it on a task locally, the way the evaluation does
+Dockerfile     # the sandbox your harness runs in at evaluation time
 ```
 
 ## The contract
 
-At evaluation time your harness runs unattended in a container built from this repo at your
-freeze commit, on a game it has never seen:
+At evaluation time your harness runs unattended, on a game it has never seen. Three things are
+fixed; everything else in this repository is yours to change.
 
-| path              | what                                                                   |
-|-------------------|------------------------------------------------------------------------|
-| `/task/spec.md`   | the game's complete written specification (read-only)                 |
-| `/task/task.json` | `strategy_file`, `strategy_class`, budget, deadline, allowed models    |
-| `/work/`          | scratch space (tmpfs)                                                  |
-| `/tmp/`           | scratch space (tmpfs)                                                  |
-| `/output/`        | write `<strategy_file>` here, defining `<strategy_class>`; logs welcome |
+1. **The build.** We build your repository at the freeze commit with **our** copy of the
+   `Dockerfile`, which runs `uv sync --frozen` on your `pyproject.toml` and `uv.lock`.
+2. **The run.** We start the container, which runs the `harness` script your `pyproject.toml`
+   defines (`[project.scripts]`), **with no arguments**, as an unprivileged user, with:
 
-- The command is the image's entry point: `harness --task /task --output /output --work /work`.
-  Keep it working.
-- Everything else is read-only: the root file system, your code and its virtualenv. There are
-  CPU, memory and process limits (currently 2 CPUs and 4 GB of RAM, no swap).
-- `deadline_s` is wall clock, from container start. At the deadline your harness gets SIGTERM,
-  and SIGKILL 30 seconds later (Python exits on SIGTERM by default: install a handler to use
-  those 30 seconds). Whatever `/output/<strategy_file>` holds at that point is what
-  gets evaluated, so write a fallback strategy early and improve it.
+   | path              | what                                                                    |
+   |-------------------|-------------------------------------------------------------------------|
+   | `/task/spec.md`   | the game's complete written specification (read-only)                  |
+   | `/task/task.json` | `strategy_file`, `strategy_class`, budget, deadline, allowed models, prices |
+   | `/output/`        | write `<strategy_file>` here, defining `<strategy_class>`; logs welcome |
+   | `/tmp/`           | scratch space (tmpfs, 1 GB)                                             |
+
+   Nothing else is writable: not the root file system, not your code or its virtualenv. There
+   are CPU, memory and process limits (2 CPUs, 4 GB of RAM, no swap).
+3. **The result.** When the harness exits, or at `deadline_s` (wall clock from container
+   start), we take `/output/<strategy_file>`. At the deadline your harness gets SIGTERM, and
+   SIGKILL 30 seconds later (Python exits on SIGTERM by default: install a handler to use those
+   30 seconds). So write a fallback strategy early and improve it.
+
+`./run.sh` does exactly this on your machine (see [Run it locally](#run-it-locally)).
+
+More about what goes in and out:
+
 - After the run, only `<strategy_file>` is copied into the tournament, on its own: it must not
   import other files from `/output`.
 - The strategy is a single Python file: standard library only, a class with
   `__init__(self, player_id)` and `act(self, obs)`. It does not need to import anything from us.
-- LLM access: the OpenAI **Responses API** (`client.responses.create`) through the evaluation's
-  gateway, with `OPENAI_BASE_URL` and `OPENAI_API_KEY` set for you (see
-  [LLM access and budget](#llm-access-and-budget)). The container has no other network access:
-  no PyPI, no web.
+- LLM access: the OpenAI Responses API only (see [Models and budget](#models-and-budget)). The
+  container has no other network access: no PyPI, no web.
 - The evaluation builds the image with **its own copy** of the `Dockerfile`. Add Python
   dependencies through `pyproject.toml` / `uv.lock` (`uv add ...`); other changes to the
   `Dockerfile` have no effect at evaluation time.
 
-## LLM access and budget
+## Models and budget
 
-**During development** you use your team's own OpenAI key, which has the hackathon's model
-allow-list and your team's spend limit. Call OpenAI directly with the openai SDK, as the
-template does.
+`task.json` gives the `allowed_models`, their `prices` and a `budget_usd`. **At evaluation both
+are enforced**: other models are refused, and once the budget is spent every further call
+fails (spending past it is recorded and may be penalised). **During development nothing
+enforces them**, so develop as if it did: keep to the allowed models and track your spend.
+`harness.pricing.cost(response.usage, task["prices"][model])` gives what a call costs; the
+template's loop already adds it up and prints it.
 
-**At evaluation** your harness gets a fresh key (a token for that run only) and
-`OPENAI_BASE_URL`, pointing at our gateway. The openai SDK picks both up from the environment
-(`OpenAI()`), so the same code works in both places. The gateway enforces the task's
-`task.json`:
-
-- `allowed_models`: any other model is refused (400 `model_not_allowed`).
-- `budget_usd`: every call is charged by the formula below. Calls go through while your
-  spend is below the budget, so the call that crosses it still completes. After that, every
-  call gets **429 `budget_exhausted`** (type `insufficient_quota`). The SDK does not retry it;
-  it raises `openai.RateLimitError` with `e.code == "budget_exhausted"`. Spending past the
-  budget is recorded and may be penalised, so stop before you reach it.
-- Use the Responses API only (`POST /v1/responses`), with function (or custom) tools. Refused:
-  hosted tools (web search, file search, code interpreter, ...), `background`, a
-  `service_tier` other than the default, and `previous_response_id` / `conversation` /
-  `prompt` (responses are not stored: send the full input each time).
-- At most 4 calls at a time. More get a 429 that the SDK retries.
-
-**The cost of a call**, in USD, with `task["prices"][model]` (USD per 1M tokens, OpenAI's
-Standard tier):
-
-```
-cost = (uncached × input + cached × cached_input + cache_write × cache_write + output × output) / 1e6
-```
-
-- `cached` and `cache_write` are `usage.input_tokens_details.cached_tokens` and
-  `.cache_write_tokens`; `uncached` is the rest of `usage.input_tokens`.
-- `output` is `usage.output_tokens`, reasoning tokens included.
-- A call whose input is above the model's `long_context.above_input_tokens` (272K) is charged
-  **entirely** at its `long_context` prices.
-
-The same function is `arena.pricing.cost` in
-[`arena`](https://github.com/zentralhack-2026-agentic-ai-harness/arena). Your harness does not
-depend on arena, so copy the formula: it is a few lines. Add up `cost(response.usage, ...)`
-after every call and you know exactly what the gateway counts.
+Use the openai SDK as the template does: `OpenAI()` reads the key and endpoint from the
+environment (your own key in development, one for the run at evaluation), so the same code
+works in both. Only the Responses API with function tools is available: no hosted tools (web
+search, code interpreter, ...), no stored responses (`previous_response_id`), at most 4 calls
+at a time.
 
 ## Run it locally
 
-Requires [uv](https://docs.astral.sh/uv/). Put your key in a `.env` file (`OPENAI_API_KEY=...`;
-it is gitignored).
-
-Get a task directory for a dev game with the `arena` CLI from
-[`arena-games-dev`](https://github.com/zentralhack-2026-agentic-ai-harness/arena-games-dev),
-cloned next to this repo (the commands below assume this repo's directory is `harness`):
+You need Docker, [uv](https://docs.astral.sh/uv/) and an OpenAI key. The three repositories
+must be cloned next to each other, into the same directory:
 
 ```bash
-cd ../arena-games-dev
-uv run arena make-task --game arena_games_dev.alpha --out ../harness/tasks/alpha
+git clone https://github.com/zentralhack-2026-agentic-ai-harness/arena.git
+git clone https://github.com/zentralhack-2026-agentic-ai-harness/arena-games-dev.git
+git clone <your fork of harness-template> harness
+
+# 1. your key, for the harness (gitignored)
+echo "OPENAI_API_KEY=sk-..." > harness/.env
+
+# 2. a task for the dev game alpha: exactly what the harness gets as /task
+(cd arena-games-dev && uv run arena make-task --game arena_games_dev.alpha \
+    --budget-usd 1 --deadline-s 600 --out ../harness/tasks/alpha)
+
+# 3. run the harness on it, as the evaluation does
+(cd harness && ./run.sh tasks/alpha)
 ```
 
-Run the harness directly:
+`run.sh` builds the image and runs it with the evaluation's mounts, limits and deadline. Only
+the budget is not enforced (see above). Each run gets its own directory; the newest is
+`runs/alpha/latest/`, with the strategy and transcript in `output/` and the container's output
+in `harness.log`.
+
+Then check the strategy and play it against the game's baselines, from `arena-games-dev`:
 
 ```bash
-uv run --env-file .env harness --task tasks/alpha --output runs/alpha/output --work runs/alpha/work
-```
-
-Or in the sandbox, as the evaluation does:
-
-```bash
-docker build -t harness .
-mkdir -p runs/alpha/output
-docker run --rm --init --env-file .env --user "$(id -u):$(id -g)" \
-    --read-only --tmpfs /work --tmpfs /tmp \
-    -v "$PWD/tasks/alpha:/task:ro" -v "$PWD/runs/alpha/output:/output" \
-    harness
-```
-
-(With rootless Docker use `--user 0:0` instead: container root is your own user there.)
-
-Then check and score the strategy, from `arena-games-dev`:
-
-```bash
-uv run arena check ../harness/runs/alpha/output/strategy.py:Strategy \
+cd arena-games-dev
+uv run arena check ../harness/runs/alpha/latest/output/strategy.py:Strategy \
     --game arena_games_dev.alpha
 uv run arena run --game arena_games_dev.alpha \
-    --strategies mine=../harness/runs/alpha/output/strategy.py:Strategy \
+    --strategies mine=../harness/runs/alpha/latest/output/strategy.py:Strategy \
     --panel arena_games_dev.alpha.baselines:DoNothing \
             arena_games_dev.alpha.baselines:RandomStrategy \
             arena_games_dev.alpha.baselines:ProportionalSpread \
     --seeds 10 --workers 8
 ```
 
-## Options
+Both options take any `[name=]path/to/file.py:Class` or `package.module:Class`. Without
+`--panel`, the `--strategies` play each other, so you can compare any strategies, e.g. two runs
+of your harness. The other dev games work the same way (see `arena-games-dev`'s README).
 
-`harness --help`: `--model` (default `gpt-6-luna`, or `$HARNESS_MODEL`), `--reasoning-effort`
-(default `medium`), `--max-steps` (default 30). Every model response, its token usage and the
-tool results are appended to `<output>/logs/transcript.jsonl`.
+## Settings
+
+There are no command-line options: the evaluation passes none. The settings are constants at
+the top of `src/harness/agent.py`: `REASONING_EFFORT` (`medium`), `MAX_STEPS` (30) and the
+bash tool's limits. The model is chosen there too (`cheapest_model`): always the cheapest of
+the task's `allowed_models`, by input plus output price in `task.json`'s `prices`. Every model
+response, its token usage, the spend so far and the tool results are appended to
+`/output/logs/transcript.jsonl`.
 
 ## Rules of thumb
 

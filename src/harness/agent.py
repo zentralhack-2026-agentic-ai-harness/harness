@@ -1,4 +1,5 @@
-"""The agent loop: one model, one tool (bash), until the model stops calling it."""
+"""The agent: one model (the cheapest allowed), one tool (bash), a loop until the model stops
+calling it."""
 
 import json
 import os
@@ -7,6 +8,8 @@ import subprocess
 from pathlib import Path
 
 from openai import OpenAI
+
+from harness.pricing import cost
 
 BASH_TOOL = {
     "type": "function",
@@ -24,35 +27,51 @@ BASH_TOOL = {
     "strict": True,
 }
 
+REASONING_EFFORT = "medium"
+MAX_STEPS = 30
 COMMAND_TIMEOUT_S = 60
 MAX_OUTPUT_CHARS = 10_000
+PROMPT = Path(__file__).with_name("prompt.md")
+
+
+def cheapest_model(task: dict) -> str:
+    """The allowed model with the lowest input + output price per token (ties: by name)."""
+    prices = task["prices"]
+    allowed = task.get("allowed_models") or list(prices)
+    return min(allowed, key=lambda m: (prices[m]["input"] + prices[m]["output"], m))
 
 
 def run_agent(
-    *,
-    instructions: str,
-    task_prompt: str,
-    work_dir: Path,
-    log_path: Path,
-    model: str,
-    reasoning_effort: str,
-    max_steps: int,
+    *, spec: str, task: dict, strategy_path: Path, work_dir: Path, log_path: Path
 ) -> None:
+    """Have the model write `strategy_path` for the game in `spec`, working in `work_dir`."""
+    model = cheapest_model(task)
+    price = task["prices"][model]
+    print(f"model: {model}", flush=True)
+    instructions = PROMPT.read_text().format(
+        work_dir=work_dir,
+        strategy_path=strategy_path,
+        strategy_class=task["strategy_class"],
+    )
+    task_prompt = f"task.json:\n```json\n{json.dumps(task, indent=2)}\n```\n\n{spec}"
+
     client = OpenAI()  # reads OPENAI_API_KEY and OPENAI_BASE_URL
     # The whole conversation lives here (store=False), so no server-side state is needed.
     conversation: list[dict] = [{"role": "user", "content": task_prompt}]
+    spent = 0.0  # USD, as the gateway counts it
 
     with log_path.open("a") as log:
-        for step in range(max_steps):
+        for step in range(MAX_STEPS):
             response = client.responses.create(
                 model=model,
                 instructions=instructions,
                 input=conversation,
                 tools=[BASH_TOOL],
-                reasoning={"effort": reasoning_effort},
+                reasoning={"effort": REASONING_EFFORT},
                 store=False,
                 include=["reasoning.encrypted_content"],  # carry reasoning across turns
             )
+            spent += cost(response.usage, price)
             output = [item.model_dump(exclude_none=True) for item in response.output]
             conversation += output
 
@@ -71,6 +90,7 @@ def run_agent(
                         "step": step,
                         "model": model,
                         "usage": response.usage.model_dump() if response.usage else None,
+                        "spent_usd": spent,
                         "output": output,
                         "tool_results": results,
                     }
@@ -78,11 +98,11 @@ def run_agent(
                 + "\n"
             )
             log.flush()
-            print(f"step {step}: {_describe(output)}", flush=True)
+            print(f"step {step} (${spent:.4f}): {_describe(output)}", flush=True)
 
             if not calls:
                 return  # the model answered without a tool call: it is done
-    print(f"stopped after max_steps={max_steps}", flush=True)
+    print(f"stopped after MAX_STEPS={MAX_STEPS}", flush=True)
 
 
 def _run_tool(call: dict, work_dir: Path) -> str:
