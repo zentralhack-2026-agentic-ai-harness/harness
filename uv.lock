@@ -25,6 +25,19 @@ wheels = [
 ]
 
 [[package]]
+name = "arena"
+version = "0.1.0"
+source = { git = "https://github.com/zentralhack-2026-agentic-ai-harness/arena?branch=main#86b41c3e550d520e615552edbb9dcd8c5b4f0555" }
+
+[[package]]
+name = "arena-games-dev"
+version = "0.1.0"
+source = { git = "https://github.com/zentralhack-2026-agentic-ai-harness/arena-games-dev?branch=main#42253af1e6f0be49b099893ad9012dd0db9bcc3f" }
+dependencies = [
+    { name = "arena" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -43,6 +56,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "arena" },
+    { name = "arena-games-dev" },
     { name = "ruff" },
 ]
 
@@ -50,7 +65,11 @@ dev = [
 requires-dist = [{ name = "openai", specifier = ">=2" }]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ruff" }]
+dev = [
+    { name = "arena", git = "https://github.com/zentralhack-2026-agentic-ai-harness/arena?branch=main" },
+    { name = "arena-games-dev", git = "https://github.com/zentralhack-2026-agentic-ai-harness/arena-games-dev?branch=main" },
+    { name = "ruff" },
+]
 
 [[package]]
 name = "httpcore2"

@@ -1,6 +1,7 @@
-# harness-template
+# harness
 
-The starting point for your Zentral Hack 2026 harness. Fork it and make it better.
+The starting point for your Zentral Hack 2026 harness. Create your own repository from this
+template (**Use this template** on GitHub) and make it better.
 
 It is deliberately minimal: one model (always the cheapest allowed one), one tool (`bash`) and
 a loop that stops when the model answers without calling the tool. It reads a game's `spec.md`
@@ -72,23 +73,28 @@ at a time.
 
 ## Run it locally
 
-You need Docker, [uv](https://docs.astral.sh/uv/) and an OpenAI key. The three repositories
-must be cloned next to each other, into the same directory:
+You need git, Docker, [uv](https://docs.astral.sh/uv/) and an OpenAI key. Everything runs from
+your clone of this repository: `uv sync` also installs, for development only,
+[arena](https://github.com/zentralhack-2026-agentic-ai-harness/arena) (the `arena` command and
+the strategy contract) and
+[arena-games-dev](https://github.com/zentralhack-2026-agentic-ai-harness/arena-games-dev) (the
+dev games: spec, simulator and baselines). Read their code on GitHub; you do not need to clone
+them.
 
 ```bash
-git clone https://github.com/zentralhack-2026-agentic-ai-harness/arena.git
-git clone https://github.com/zentralhack-2026-agentic-ai-harness/arena-games-dev.git
-git clone <your fork of harness-template> harness
+git clone <your repository> harness
+cd harness
+uv sync
 
 # 1. your key, for the harness (gitignored)
-echo "OPENAI_API_KEY=sk-..." > harness/.env
+echo "OPENAI_API_KEY=sk-..." > .env
 
 # 2. a task for the dev game alpha: exactly what the harness gets as /task
-(cd arena-games-dev && uv run arena make-task --game arena_games_dev.alpha \
-    --budget-usd 1 --deadline-s 600 --out ../harness/tasks/alpha)
+uv run arena make-task --game arena_games_dev.alpha --budget-usd 1 --deadline-s 600 \
+    --out tasks/alpha
 
 # 3. run the harness on it, as the evaluation does
-(cd harness && ./run.sh tasks/alpha)
+./run.sh tasks/alpha
 ```
 
 `run.sh` builds the image and runs it with the evaluation's mounts, limits and deadline. Only
@@ -96,14 +102,12 @@ the budget is not enforced (see above). Each run gets its own directory; the new
 `runs/alpha/latest/`, with the strategy and transcript in `output/` and the container's output
 in `harness.log`.
 
-Then check the strategy and play it against the game's baselines, from `arena-games-dev`:
+Then check the strategy and play it against the game's baselines:
 
 ```bash
-cd arena-games-dev
-uv run arena check ../harness/runs/alpha/latest/output/strategy.py:Strategy \
-    --game arena_games_dev.alpha
+uv run arena check runs/alpha/latest/output/strategy.py:Strategy --game arena_games_dev.alpha
 uv run arena run --game arena_games_dev.alpha \
-    --strategies mine=../harness/runs/alpha/latest/output/strategy.py:Strategy \
+    --strategies mine=runs/alpha/latest/output/strategy.py:Strategy \
     --panel arena_games_dev.alpha.baselines:DoNothing \
             arena_games_dev.alpha.baselines:RandomStrategy \
             arena_games_dev.alpha.baselines:ProportionalSpread \
@@ -113,6 +117,19 @@ uv run arena run --game arena_games_dev.alpha \
 Both options take any `[name=]path/to/file.py:Class` or `package.module:Class`. Without
 `--panel`, the `--strategies` play each other, so you can compare any strategies, e.g. two runs
 of your harness. The other dev games work the same way (see `arena-games-dev`'s README).
+
+### Updating arena and the dev games
+
+When we announce a fix to arena or arena-games-dev, run this in your repository:
+
+```bash
+uv sync --upgrade-package arena --upgrade-package arena-games-dev
+```
+
+It moves both to their latest `main` and records the new commits in `uv.lock`; commit that
+change. Neither is part of the evaluation image (it installs without the dev dependencies), so
+this only affects your local runs. You can also read the installed code offline in
+`.venv/lib/python3.13/site-packages/arena/` and `.../arena_games_dev/`.
 
 ## Settings
 
