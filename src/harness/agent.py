@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 from openai import OpenAI
@@ -118,6 +119,11 @@ def _run_tool(call: dict, work_dir: Path) -> str:
 def bash(command: str, cwd: Path, timeout: float = COMMAND_TIMEOUT_S) -> str:
     """Run `command` with bash; the API key is not passed on."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("OPENAI_")}
+    # Local runs (uv run, the debugger) put the harness's virtualenv first on PATH; the
+    # container does not. Drop it, so that python3 is the plain interpreter in both.
+    venv_bin = str(Path(sys.executable).parent)
+    env["PATH"] = os.pathsep.join(p for p in env.get("PATH", "").split(os.pathsep) if p != venv_bin)
+    env.pop("VIRTUAL_ENV", None)
     proc = subprocess.Popen(
         ["bash", "-c", command],
         cwd=cwd,

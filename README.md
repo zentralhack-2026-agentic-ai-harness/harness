@@ -10,12 +10,13 @@ strategy, no conformance check, no simulator. Building those (or something bette
 
 ```
 src/harness/
-  __main__.py  # what the container runs: connects /task and /output to the agent
+  __main__.py  # the `harness` command: connects the task and output paths to the agent
   agent.py     # the agent: model choice, settings, the loop (Responses API), the bash tool
   pricing.py   # what a call costs, as the evaluation counts it
   prompt.md    # the system prompt
 run.sh         # run it on a task locally, the way the evaluation does
 Dockerfile     # the sandbox your harness runs in at evaluation time
+.vscode/launch.json  # run or debug it without Docker in VS Code
 ```
 
 ## The contract
@@ -91,7 +92,7 @@ echo "OPENAI_API_KEY=sk-..." > .env
 
 # 2. a task for the dev game alpha: exactly what the harness gets as /task
 uv run arena make-task --game arena_games_dev.alpha --budget-usd 1 --deadline-s 600 \
-    --out tasks/alpha
+    --model gpt-6-luna --model gpt-6.1-sol --out tasks/alpha
 
 # 3. run the harness on it, as the evaluation does
 ./run.sh tasks/alpha
@@ -118,6 +119,27 @@ Both options take any `[name=]path/to/file.py:Class` or `package.module:Class`. 
 `--panel`, the `--strategies` play each other, so you can compare any strategies, e.g. two runs
 of your harness. The other dev games work the same way (see `arena-games-dev`'s README).
 
+### Without Docker, and in the debugger
+
+For quicker iterations, run the same agent directly on your machine:
+
+```bash
+uv run --env-file .env harness tasks/alpha
+```
+
+It writes into `runs/alpha/<time>/` like `run.sh` (so the commands above work on it too), with
+`output/` and the agent's working directory `work/`; the log goes to your terminal. To step
+through it, open this repository in VS Code (with the Python extension), set breakpoints, and
+start **harness (local)** in Run and Debug (F5); it asks for the task directory.
+
+This is not the evaluation's environment, so check with `run.sh` before you rely on it:
+
+- **The model's bash commands run on your machine, as you**, with no container around them:
+  they can read and change anything you can. Watch what it does.
+- No deadline, no CPU or memory limits, and your machine's tools rather than the image's.
+  `python3` is your system's, not the harness's virtualenv (which has arena and the dev games
+  installed; the container has neither).
+
 ### Updating arena and the dev games
 
 When we announce a fix to arena or arena-games-dev, run this in your repository:
@@ -133,17 +155,10 @@ this only affects your local runs. You can also read the installed code offline 
 
 ## Settings
 
-There are no command-line options: the evaluation passes none. The settings are constants at
-the top of `src/harness/agent.py`: `REASONING_EFFORT` (`medium`), `MAX_STEPS` (30) and the
+The evaluation runs `harness` without arguments (`harness TASK_DIR` is only for local runs, see
+above), so there are no command-line options. The settings are constants at the top of
+`src/harness/agent.py`: `REASONING_EFFORT` (`medium`), `MAX_STEPS` (30) and the
 bash tool's limits. The model is chosen there too (`cheapest_model`): always the cheapest of
 the task's `allowed_models`, by input plus output price in `task.json`'s `prices`. Every model
 response, its token usage, the spend so far and the tool results are appended to
-`/output/logs/transcript.jsonl`.
-
-## Rules of thumb
-
-- Your harness never gets game source code or a simulator, during development or evaluation:
-  only `spec.md`. You may read the dev games' source yourself; the evaluation games are
-  different.
-- The bash tool does not pass `OPENAI_*` variables to commands, but it runs as the same user as
-  the harness. Do not rely on it as a security boundary.
+`logs/transcript.jsonl` in the output directory.

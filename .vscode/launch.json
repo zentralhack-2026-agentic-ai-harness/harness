@@ -1,0 +1,28 @@
+{
+    // Run or debug the harness locally (Run and Debug view, F5): `harness TASK_DIR`, without
+    // Docker. Make the task first, e.g. `uv sync` and then
+    // `uv run arena make-task --game arena_games_dev.alpha --budget-usd 1 --out tasks/alpha`.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "harness (local)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "harness",
+            "args": ["${input:taskDir}"],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "taskDir",
+            "type": "promptString",
+            "description": "task directory (from arena make-task)",
+            "default": "tasks/alpha"
+        }
+    ]
+}
