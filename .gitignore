@@ -7,4 +7,5 @@ __pycache__/
 runs/
 tasks/
 
-.vscode/
+.vscode/*
+!.vscode/launch.json
